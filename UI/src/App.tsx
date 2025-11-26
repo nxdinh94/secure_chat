@@ -3,6 +3,7 @@ import './App.css';
 import Login from './components/Login';
 import Register from './components/Register';
 import Chat from './components/Chat';
+import { chatAPI } from './services/api';
 
 type ViewType = 'login' | 'register' | 'chat';
 
@@ -29,15 +30,27 @@ function App() {
     setCurrentView('login');
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (currentUser) {
+      try {
+        // Remove public key from server to show as offline
+        await chatAPI.deletePublicKey(currentUser);
+      } catch (err) {
+        console.error('Failed to delete public key:', err);
+      }
+    }
+    
     setCurrentUser(null);
     localStorage.removeItem('currentUser');
-    // Clear session keys
-    Object.keys(localStorage).forEach(key => {
-      if (key.startsWith('sessionKey_')) {
-        localStorage.removeItem(key);
-      }
-    });
+    // Clear tab-specific storage
+    sessionStorage.clear();
+    // Optionally keep conversation keys in localStorage for history
+    // If you want to clear them too, uncomment below:
+    // Object.keys(localStorage).forEach(key => {
+    //   if (key.startsWith('conversationKey_')) {
+    //     localStorage.removeItem(key);
+    //   }
+    // });
     setCurrentView('login');
   };
 

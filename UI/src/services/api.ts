@@ -72,8 +72,24 @@ export const chatAPI = {
     const response = await axios.post(`${API_BASE_URL}/chat/public-key`, { username, publicKey });
     return response.data;
   },
+  deletePublicKey: async (username: string) => {
+    const response = await axios.delete(`${API_BASE_URL}/chat/public-key/${username}`);
+    return response.data;
+  },
   getPublicKey: async (username: string) => {
     const response = await axios.get(`${API_BASE_URL}/chat/public-key/${username}`);
+    return response.data;
+  },
+  storeSessionKey: async (sender: string, receiver: string, encryptedKey: string) => {
+    const response = await axios.post(`${API_BASE_URL}/chat/session-key`, {
+      sender,
+      receiver,
+      encryptedKey,
+    });
+    return response.data;
+  },
+  getSessionKey: async (sender: string, receiver: string) => {
+    const response = await axios.get(`${API_BASE_URL}/chat/session-key/${sender}/${receiver}`);
     return response.data;
   },
   sendMessage: async (sender: string, receiver: string, encryptedContent: string, messageHash: string) => {

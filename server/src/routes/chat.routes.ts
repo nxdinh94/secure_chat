@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import User from '../models/User';
 import PublicKey from '../models/PublicKey';
 import Message from '../models/Message';
+import SessionKey from '../models/SessionKey';
 
 const router = Router();
 
@@ -50,6 +51,20 @@ router.get('/public-key/:username', async (req: Request, res: Response) => {
     res.json({ username: publicKey.username, publicKey: publicKey.publicKey });
   } catch (error) {
     console.error('Get public key error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete user's public key (for logout)
+router.delete('/public-key/:username', async (req: Request, res: Response) => {
+  try {
+    const { username } = req.params;
+
+    await PublicKey.findOneAndDelete({ username });
+
+    res.json({ message: 'Public key deleted successfully' });
+  } catch (error) {
+    console.error('Delete public key error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -111,17 +126,87 @@ router.get('/messages/:user1/:user2', async (req: Request, res: Response) => {
   }
 });
 
-// Get all users except the current user
+// Get all users except the current user (only those with public keys - online users)
 router.get('/users', async (req: Request, res: Response) => {
   try {
     const { exclude } = req.query;
 
-    const query = exclude && typeof exclude === 'string' ? { username: { $ne: exclude } } : {};
-    const users = await User.find(query).select('username createdAt');
+    // Get all users with public keys (online users)
+    const onlineUsers = await PublicKey.find().select('username');
+    const onlineUsernames = onlineUsers.map(u => u.username);
+
+    // Filter out the current user
+    const filteredUsernames = exclude && typeof exclude === 'string'
+      ? onlineUsernames.filter(username => username !== exclude)
+      : onlineUsernames;
+
+    // Get full user data for online users
+    const users = await User.find({ username: { $in: filteredUsernames } }).select('username createdAt');
 
     res.json({ users });
   } catch (error) {
     console.error('Get users error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Store encrypted session key
+router.post('/session-key', async (req: Request, res: Response) => {
+  try {
+    const { sender, receiver, encryptedKey } = req.body;
+
+    if (!sender || !receiver || !encryptedKey) {
+      res.status(400).json({ error: 'Sender, receiver, and encrypted key are required' });
+      return;
+    }
+
+    // Verify both users exist
+    const senderUser = await User.findOne({ username: sender });
+    const receiverUser = await User.findOne({ username: receiver });
+
+    if (!senderUser || !receiverUser) {
+      res.status(404).json({ error: 'Sender or receiver not found' });
+      return;
+    }
+
+    // Store or update session key
+    await SessionKey.findOneAndUpdate(
+      { sender, receiver },
+      { sender, receiver, encryptedKey },
+      { upsert: true, new: true }
+    );
+
+    res.json({ message: 'Session key stored successfully' });
+  } catch (error) {
+    console.error('Store session key error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get encrypted session key
+router.get('/session-key/:sender/:receiver', async (req: Request, res: Response) => {
+  try {
+    const { sender, receiver } = req.params;
+
+    // Try to find key in either direction (sender->receiver or receiver->sender)
+    let sessionKey = await SessionKey.findOne({ sender, receiver });
+    
+    if (!sessionKey) {
+      sessionKey = await SessionKey.findOne({ sender: receiver, receiver: sender });
+    }
+
+    if (!sessionKey) {
+      res.status(404).json({ error: 'Session key not found' });
+      return;
+    }
+
+    res.json({ 
+      sender: sessionKey.sender,
+      receiver: sessionKey.receiver,
+      encryptedKey: sessionKey.encryptedKey 
+    });
+  } catch (error) {
+    console.error('Get session key error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

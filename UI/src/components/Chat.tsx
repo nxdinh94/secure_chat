@@ -8,6 +8,7 @@ import {
   importAESKey,
   importRSAPublicKey,
   rsaEncrypt,
+  rsaDecrypt,
   aesEncrypt,
   aesDecrypt,
   sha256,
@@ -49,12 +50,27 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Crypto keys
+  // Crypto keys - stored per tab session
   const privateKeyRef = useRef<CryptoKey | null>(null);
   const publicKeyRef = useRef<string>('');
   const aesKeysRef = useRef<Map<string, CryptoKey>>(new Map());
+  
+  // Unique tab ID to avoid conflicts between multiple tabs
+  const tabIdRef = useRef<string>(
+    sessionStorage.getItem('tabId') || `tab_${Date.now()}_${Math.random()}`
+  );
+
+  // Track if initial user selection has been done
+  const hasAutoSelectedRef = useRef<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Initialize tab ID
+  useEffect(() => {
+    if (!sessionStorage.getItem('tabId')) {
+      sessionStorage.setItem('tabId', tabIdRef.current);
+    }
+  }, []);
 
   // Initialize RSA keys on mount
   useEffect(() => {
@@ -74,6 +90,13 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
 
     initializeKeys();
     fetchUsers();
+
+    // Refresh user list every 5 seconds to show online/offline status
+    const userRefreshInterval = setInterval(fetchUsers, 5000);
+
+    return () => {
+      clearInterval(userRefreshInterval);
+    };
   }, [currentUser]);
 
   // Fetch users
@@ -82,9 +105,10 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
       const response = await chatAPI.getUsers(currentUser);
       setUsers(response.users);
       
-      // Auto-select first user if available and no user is selected
-      if (response.users.length > 0 && !selectedUser) {
+      // Auto-select first user ONLY on initial load
+      if (response.users.length > 0 && !selectedUser && !hasAutoSelectedRef.current) {
         setSelectedUser(response.users[0].username);
+        hasAutoSelectedRef.current = true;
       }
     } catch (err) {
       console.error('Failed to fetch users:', err);
@@ -142,25 +166,54 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
 
   // Get or create AES session key for a user
   const getOrCreateSessionKey = async (username: string): Promise<CryptoKey> => {
-    // Check if we already have a session key
+    // Check if we already have a session key in memory
     let sessionKey = aesKeysRef.current.get(username);
     if (sessionKey) {
       return sessionKey;
     }
 
-    // Try to retrieve from localStorage
-    const storedKey = localStorage.getItem(`sessionKey_${currentUser}_${username}`);
+    // Try to retrieve from localStorage (shared across tabs for same conversation)
+    const conversationKey = [currentUser, username].sort().join('_');
+    const storageKey = `conversationKey_${conversationKey}`;
+    const storedKey = localStorage.getItem(storageKey);
     if (storedKey) {
       sessionKey = await importAESKey(storedKey);
       aesKeysRef.current.set(username, sessionKey);
       return sessionKey;
     }
 
+    // Try to fetch session key from server (other user may have already created it)
+    try {
+      const response = await chatAPI.getSessionKey(currentUser, username);
+      
+      // Determine who created the key
+      const iAmReceiver = response.receiver === currentUser;
+      
+      if (iAmReceiver) {
+        // I'm the receiver - decrypt the key with my private key
+        const decryptedKey = await rsaDecrypt(response.encryptedKey, privateKeyRef.current!);
+        sessionKey = await importAESKey(decryptedKey);
+      } else {
+        // I'm the sender - just import the key I created before
+        sessionKey = await importAESKey(response.encryptedKey);
+      }
+      
+      // Store in memory and localStorage
+      const exportedKey = await exportAESKey(sessionKey);
+      aesKeysRef.current.set(username, sessionKey);
+      localStorage.setItem(storageKey, exportedKey);
+      
+      return sessionKey;
+    } catch (err) {
+      // Session key doesn't exist on server, create new one
+      console.log('No existing session key, creating new one');
+    }
+
     // Generate new session key
     sessionKey = await generateAESKey();
     const exportedKey = await exportAESKey(sessionKey);
     aesKeysRef.current.set(username, sessionKey);
-    localStorage.setItem(`sessionKey_${currentUser}_${username}`, exportedKey);
+    localStorage.setItem(storageKey, exportedKey);
 
     // Exchange session key with the other user
     await exchangeSessionKey(username, sessionKey);
@@ -171,15 +224,18 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
   // Exchange session key using RSA encryption
   const exchangeSessionKey = async (username: string, sessionKey: CryptoKey) => {
     try {
+      // Get the other user's public key
       const response = await chatAPI.getPublicKey(username);
       const theirPublicKey = await importRSAPublicKey(response.publicKey);
+      
+      // Export and encrypt the session key with their public key
       const exportedSessionKey = await exportAESKey(sessionKey);
-      // In production, encrypt the session key with their public key and send it
-      await rsaEncrypt(exportedSessionKey, theirPublicKey);
-
-      // In a real app, you'd send this encrypted key to the other user
-      // For this demo, we'll store it locally with a consistent naming convention
-      localStorage.setItem(`sessionKey_${username}_${currentUser}`, exportedSessionKey);
+      const encryptedSessionKey = await rsaEncrypt(exportedSessionKey, theirPublicKey);
+      
+      // Store encrypted session key on server for the other user to retrieve
+      await chatAPI.storeSessionKey(currentUser, username, encryptedSessionKey);
+      
+      console.log(`Session key exchanged with ${username}`);
     } catch (err) {
       console.error('Failed to exchange session key:', err);
     }
@@ -190,27 +246,32 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
     const isReceived = msg.receiver === currentUser;
     const otherUser = isReceived ? msg.sender : msg.receiver;
 
-    // Get session key
+    // Get or create session key for this user
     let sessionKey = aesKeysRef.current.get(otherUser);
     if (!sessionKey) {
-      const storedKey = localStorage.getItem(`sessionKey_${currentUser}_${otherUser}`);
-      if (!storedKey) {
-        // Try the reverse naming convention
-        const reverseKey = localStorage.getItem(`sessionKey_${otherUser}_${currentUser}`);
-        if (reverseKey) {
-          sessionKey = await importAESKey(reverseKey);
-          aesKeysRef.current.set(otherUser, sessionKey);
-        } else {
-          throw new Error('No session key found');
-        }
-      } else {
+      // Use the same conversation key format for decryption
+      const conversationKey = [currentUser, otherUser].sort().join('_');
+      const storageKey = `conversationKey_${conversationKey}`;
+      const storedKey = localStorage.getItem(storageKey);
+      
+      if (storedKey) {
         sessionKey = await importAESKey(storedKey);
         aesKeysRef.current.set(otherUser, sessionKey);
+      } else {
+        // Generate new session key if none exists
+        sessionKey = await generateAESKey();
+        const exportedKey = await exportAESKey(sessionKey);
+        aesKeysRef.current.set(otherUser, sessionKey);
+        localStorage.setItem(storageKey, exportedKey);
       }
     }
 
     // Decrypt message
-    const [ciphertext, iv] = msg.encryptedContent.split(':');
+    const parts = msg.encryptedContent.split(':');
+    if (parts.length !== 2) {
+      throw new Error('Invalid encrypted content format');
+    }
+    const [ciphertext, iv] = parts;
     const decryptedContent = await aesDecrypt(ciphertext, iv, sessionKey);
 
     // Verify message integrity
