@@ -81,6 +81,11 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
     try {
       const response = await chatAPI.getUsers(currentUser);
       setUsers(response.users);
+      
+      // Auto-select first user if available and no user is selected
+      if (response.users.length > 0 && !selectedUser) {
+        setSelectedUser(response.users[0].username);
+      }
     } catch (err) {
       console.error('Failed to fetch users:', err);
     }
@@ -89,10 +94,14 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
   // Fetch messages when a user is selected
   useEffect(() => {
     if (selectedUser) {
+      // Clear previous messages immediately for better UX
+      setMessages([]);
       fetchMessages();
       // Set up polling for new messages
       const interval = setInterval(fetchMessages, 3000);
       return () => clearInterval(interval);
+    } else {
+      setMessages([]);
     }
   }, [selectedUser]);
 
