@@ -14,12 +14,25 @@ A secure real-time chat application implementing modern cryptographic techniques
 
 ## 📋 Table of Contents
 
-1. [Security Architecture](#security-architecture)
-2. [Project Structure](#project-structure)
-3. [How It Works](#how-it-works)
-4. [Installation & Setup](#installation--setup)
-5. [API Documentation](#api-documentation)
-6. [Technology Stack](#technology-stack)
+### 🔒 Security Questions
+1. [Is password hashed before saving to database?](#1-password-hashing-sha-256)
+2. [How messages are encrypted before saving?](#2-message-encryption-aes-256-gcm)
+3. [How messages are decrypted before showing to UI?](#3-message-decryption)
+4. [How users receive AES key to start a chat?](#4-aes-key-exchange-rsa-oaep)
+5. [How AES key is stored?](#5-aes-key-storage)
+6. [How hash method is implemented?](#6-hash-implementation-sha-256)
+7. [How RSA is implemented?](#7-rsa-implementation)
+8. [How users can chat together?](#8-how-users-can-chat-together)
+
+### 📚 Documentation
+- [Security Architecture](#security-architecture)
+- [Project Structure](#project-structure)
+- [API Documentation](#api-documentation)
+- [Technology Stack](#technology-stack)
+- [Installation & Setup](#installation--setup)
+- [Testing Guide](#testing-the-application)
+- [Security Best Practices](#security-best-practices-implemented)
+- [Limitations & Improvements](#️-security-limitations--future-improvements)
 
 ---
 
