@@ -178,18 +178,47 @@ const decryptMessage = async (msg: Message): Promise<DecryptedMessage> => {
 **Key Exchange Protocol:**
 
 ```
-User A                                    User B
-   |                                         |
-   |-- 1. Generate RSA Key Pair -----------→|
-   |←- 2. Store Public Key on Server -------|
-   |                                         |
-   |-- 3. Generate AES Session Key -------->|
-   |                                         |
-   |-- 4. Encrypt AES Key with B's RSA ---->|
-   |                                         |
-   |←- 5. Decrypt AES Key with Private Key -|
-   |                                         |
-   |←-------- 6. Both have AES Key -------->|
+A (alice)                 Server                    B (bob)
+   |                        |                          |
+   | 1. Generate AES key    |                          |
+   |    "abc123..."         |                          |
+   |                        |                          |
+   | 2. Get B's public key  |                          |
+   |----------------------->|                          |
+   |    Returns RSA pub     |                          |
+   |<-----------------------|                          |
+   |                        |                          |
+   | 3. Encrypt AES with    |                          |
+   |    B's RSA public      |                          |
+   |    "x7f9k2m..."        |                          |
+   |                        |                          |
+   | 4. POST encrypted key  |                          |
+   |----------------------->| Stores in DB             |
+   |    OK                  | {sender:alice,           |
+   |<-----------------------|  receiver:bob,           |
+   |                        |  encryptedKey:"x7f9..."}|
+   |                        |                          |
+   | 5. Send encrypted msg  |                          |
+   |----------------------->| Stores encrypted msg     |
+   |                        |                          |
+   |                        |    6. GET messages       |
+   |                        |<-------------------------|
+   |                        |    Returns encrypted msg |
+   |                        |------------------------->|
+   |                        |                          |
+   |                        |    7. Need AES key!      |
+   |                        |       GET session-key    |
+   |                        |<-------------------------|
+   |                        |    Returns "x7f9k2m..."  |
+   |                        |------------------------->|
+   |                        |                          | 8. Decrypt with
+   |                        |                          |    RSA private key
+   |                        |                          |    Gets "abc123..."
+   |                        |                          |
+   |                        |                          | 9. Decrypt message
+   |                        |                          |    with AES key
+   |                        |                          |
+   |                        |                          | ✅ Reads message!
 ```
 
 **Implementation:**
