@@ -179,37 +179,44 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
     if (storedKey) {
       sessionKey = await importAESKey(storedKey);
       aesKeysRef.current.set(username, sessionKey);
+      console.log(`Using existing session key from localStorage for ${username}`);
       return sessionKey;
     }
 
-    // Try to fetch session key from server (other user may have already created it)
+    // Try to fetch session key from server (check both directions)
     try {
       const response = await chatAPI.getSessionKey(currentUser, username);
       
-      // Determine who created the key
-      const iAmReceiver = response.receiver === currentUser;
-      
-      if (iAmReceiver) {
+      // Check if I'm the receiver
+      if (response.receiver === currentUser) {
         // I'm the receiver - decrypt the key with my private key
+        console.log(`Decrypting session key from ${response.sender}`);
         const decryptedKey = await rsaDecrypt(response.encryptedKey, privateKeyRef.current!);
         sessionKey = await importAESKey(decryptedKey);
+        
+        // Store in memory and localStorage
+        const exportedKey = await exportAESKey(sessionKey);
+        aesKeysRef.current.set(username, sessionKey);
+        localStorage.setItem(storageKey, exportedKey);
+        
+        console.log(`Successfully received and stored session key from ${response.sender}`);
+        return sessionKey;
       } else {
-        // I'm the sender - just import the key I created before
-        sessionKey = await importAESKey(response.encryptedKey);
+        // I'm the sender - check if receiver is the other user
+        if (response.sender === currentUser && response.receiver === username) {
+          // This is the key I created, but I lost it from localStorage
+          // I cannot use the encrypted version, need to create new one
+          console.log('Found my own key but cannot decrypt it, creating new one');
+          throw new Error('Need to create new key');
+        }
       }
-      
-      // Store in memory and localStorage
-      const exportedKey = await exportAESKey(sessionKey);
-      aesKeysRef.current.set(username, sessionKey);
-      localStorage.setItem(storageKey, exportedKey);
-      
-      return sessionKey;
     } catch (err) {
-      // Session key doesn't exist on server, create new one
-      console.log('No existing session key, creating new one');
+      // Session key doesn't exist on server, or we need to create a new one
+      console.log('No existing session key found, creating new one for', username);
     }
 
-    // Generate new session key
+    // Generate new session key and share it
+    console.log(`Generating new AES session key for conversation with ${username}`);
     sessionKey = await generateAESKey();
     const exportedKey = await exportAESKey(sessionKey);
     aesKeysRef.current.set(username, sessionKey);
@@ -246,25 +253,8 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
     const isReceived = msg.receiver === currentUser;
     const otherUser = isReceived ? msg.sender : msg.receiver;
 
-    // Get or create session key for this user
-    let sessionKey = aesKeysRef.current.get(otherUser);
-    if (!sessionKey) {
-      // Use the same conversation key format for decryption
-      const conversationKey = [currentUser, otherUser].sort().join('_');
-      const storageKey = `conversationKey_${conversationKey}`;
-      const storedKey = localStorage.getItem(storageKey);
-      
-      if (storedKey) {
-        sessionKey = await importAESKey(storedKey);
-        aesKeysRef.current.set(otherUser, sessionKey);
-      } else {
-        // Generate new session key if none exists
-        sessionKey = await generateAESKey();
-        const exportedKey = await exportAESKey(sessionKey);
-        aesKeysRef.current.set(otherUser, sessionKey);
-        localStorage.setItem(storageKey, exportedKey);
-      }
-    }
+    // Get or create session key for this user (will fetch from server if needed)
+    const sessionKey = await getOrCreateSessionKey(otherUser);
 
     // Decrypt message
     const parts = msg.encryptedContent.split(':');
