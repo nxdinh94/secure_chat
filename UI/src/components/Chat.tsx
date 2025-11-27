@@ -60,9 +60,6 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
     sessionStorage.getItem('tabId') || `tab_${Date.now()}_${Math.random()}`
   );
 
-  // Track if initial user selection has been done
-  const hasAutoSelectedRef = useRef<boolean>(false);
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Initialize tab ID
@@ -104,12 +101,6 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
     try {
       const response = await chatAPI.getUsers(currentUser);
       setUsers(response.users);
-      
-      // Auto-select first user ONLY on initial load
-      if (response.users.length > 0 && !selectedUser && !hasAutoSelectedRef.current) {
-        setSelectedUser(response.users[0].username);
-        hasAutoSelectedRef.current = true;
-      }
     } catch (err) {
       console.error('Failed to fetch users:', err);
     }
