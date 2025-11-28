@@ -182,16 +182,32 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
       if (response.receiver === currentUser) {
         // I'm the receiver - decrypt the key with my private key
         console.log(`Decrypting session key from ${response.sender}`);
-        const decryptedKey = await rsaDecrypt(response.encryptedKey, privateKeyRef.current!);
-        sessionKey = await importAESKey(decryptedKey);
         
-        // Store in memory and localStorage
-        const exportedKey = await exportAESKey(sessionKey);
-        aesKeysRef.current.set(username, sessionKey);
-        localStorage.setItem(storageKey, exportedKey);
+        // Check if private key exists
+        if (!privateKeyRef.current) {
+          throw new Error('PRIVATE_KEY_MISSING');
+        }
         
-        console.log(`Successfully received and stored session key from ${response.sender}`);
-        return sessionKey;
+        try {
+          const decryptedKey = await rsaDecrypt(response.encryptedKey, privateKeyRef.current);
+          sessionKey = await importAESKey(decryptedKey);
+          
+          // Store in memory and localStorage
+          const exportedKey = await exportAESKey(sessionKey);
+          aesKeysRef.current.set(username, sessionKey);
+          localStorage.setItem(storageKey, exportedKey);
+          
+          console.log(`Successfully received and stored session key from ${response.sender}`);
+          return sessionKey;
+        } catch (decryptErr) {
+          // Failed to decrypt - private key was lost (page refresh)
+          console.error('Failed to decrypt AES key - private key missing or invalid');
+          
+          // Clear the invalid localStorage key
+          localStorage.removeItem(storageKey);
+          
+          throw new Error('CANNOT_DECRYPT_SESSION_KEY');
+        }
       } else {
         // I'm the sender - check if receiver is the other user
         if (response.sender === currentUser && response.receiver === username) {
@@ -201,7 +217,11 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
           throw new Error('Need to create new key');
         }
       }
-    } catch (err) {
+    } catch (err: any) {
+      // Check if it's a critical error (cannot decrypt)
+      if (err.message === 'CANNOT_DECRYPT_SESSION_KEY' || err.message === 'PRIVATE_KEY_MISSING') {
+        throw err; // Propagate the error to show warning to user
+      }
       // Session key doesn't exist on server, or we need to create a new one
       console.log('No existing session key found, creating new one for', username);
     }
@@ -244,29 +264,55 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
     const isReceived = msg.receiver === currentUser;
     const otherUser = isReceived ? msg.sender : msg.receiver;
 
-    // Get or create session key for this user (will fetch from server if needed)
-    const sessionKey = await getOrCreateSessionKey(otherUser);
+    try {
+      // Get or create session key for this user (will fetch from server if needed)
+      const sessionKey = await getOrCreateSessionKey(otherUser);
 
-    // Decrypt message
-    const parts = msg.encryptedContent.split(':');
-    if (parts.length !== 2) {
-      throw new Error('Invalid encrypted content format');
+      // Decrypt message
+      const parts = msg.encryptedContent.split(':');
+      if (parts.length !== 2) {
+        throw new Error('Invalid encrypted content format');
+      }
+      const [ciphertext, iv] = parts;
+      const decryptedContent = await aesDecrypt(ciphertext, iv, sessionKey);
+
+      // Verify message integrity
+      const computedHash = await sha256(decryptedContent);
+      const verified = computedHash === msg.messageHash;
+
+      return {
+        id: msg._id,
+        sender: msg.sender,
+        receiver: msg.receiver,
+        content: decryptedContent,
+        timestamp: msg.timestamp,
+        verified,
+      };
+    } catch (err: any) {
+      // Handle decryption errors
+      if (err.message === 'CANNOT_DECRYPT_SESSION_KEY') {
+        return {
+          id: msg._id,
+          sender: msg.sender,
+          receiver: msg.receiver,
+          content: '⚠️ Cannot receive AES key from sender. Private key was lost (page refresh). Please ask sender to send a new message.',
+          timestamp: msg.timestamp,
+          verified: false,
+        };
+      }
+      if (err.message === 'PRIVATE_KEY_MISSING') {
+        return {
+          id: msg._id,
+          sender: msg.sender,
+          receiver: msg.receiver,
+          content: '⚠️ Private key missing. Please refresh the page and login again.',
+          timestamp: msg.timestamp,
+          verified: false,
+        };
+      }
+      // Other decryption errors
+      throw err;
     }
-    const [ciphertext, iv] = parts;
-    const decryptedContent = await aesDecrypt(ciphertext, iv, sessionKey);
-
-    // Verify message integrity
-    const computedHash = await sha256(decryptedContent);
-    const verified = computedHash === msg.messageHash;
-
-    return {
-      id: msg._id,
-      sender: msg.sender,
-      receiver: msg.receiver,
-      content: decryptedContent,
-      timestamp: msg.timestamp,
-      verified,
-    };
   };
 
   // Send a message
@@ -293,9 +339,15 @@ const Chat: React.FC<ChatProps> = ({ currentUser, onLogout }) => {
 
       setNewMessage('');
       await fetchMessages();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to send message:', err);
-      setError('Failed to send message');
+      if (err.message === 'CANNOT_DECRYPT_SESSION_KEY') {
+        setError('⚠️ Cannot receive AES key from receiver. They need to send you a message first after page refresh.');
+      } else if (err.message === 'PRIVATE_KEY_MISSING') {
+        setError('⚠️ Private key missing. Please refresh the page and login again.');
+      } else {
+        setError('Failed to send message');
+      }
     } finally {
       setLoading(false);
     }
